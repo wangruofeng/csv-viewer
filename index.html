@@ -206,6 +206,50 @@
     background: var(--bg); font-size: 12px; color: var(--text-muted); text-align: center;
   }
 
+  /* ---------- Source view（源码视图） ---------- */
+  .source-panel {
+    max-width: 1200px; margin: 0 auto; background: var(--panel);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .source-wrap { display: flex; background: var(--panel); overflow: auto; }
+  .source-gutter {
+    margin: 0; padding: 10px 10px 10px 14px; flex-shrink: 0;
+    text-align: right; user-select: none;
+    font-family: "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+    font-size: 12.5px; line-height: 1.6; color: var(--text-faint);
+    background: var(--bg); border-right: 1px solid var(--border);
+    white-space: pre; position: sticky; left: 0; z-index: 1;
+  }
+  .source-code {
+    margin: 0; padding: 10px 14px; flex: 1; min-width: 0;
+    font-family: "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+    font-size: 12.5px; line-height: 1.6; color: var(--text);
+    white-space: pre; tab-size: 4; -moz-tab-size: 4;
+  }
+  .source-code .tok-quote { color: var(--success); }
+  .source-code .tok-q { color: var(--danger); font-weight: 600; }
+  .source-code .tok-delim { color: var(--accent); opacity: .82; }
+
+  /* ---------- Split view（源码 / 预览 对比） ---------- */
+  .split-panel { display: flex; gap: 16px; max-width: 1500px; margin: 0 auto; }
+  .split-pane {
+    flex: 1; min-width: 0; height: calc(100vh - 190px);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .split-pane > .table-panel,
+  .split-pane > .source-panel {
+    max-width: none; margin: 0; height: 100%;
+    display: flex; flex-direction: column;
+  }
+  .split-pane .table-wrap,
+  .split-pane .source-wrap { flex: 1; overflow: auto; }
+  @media (max-width: 900px) {
+    .split-panel { flex-direction: column; }
+    .split-pane { flex: none; height: 65vh; }
+  }
+
   /* ---------- Error ---------- */
   .error-box {
     max-width: 760px; margin: 8vh auto 0;
@@ -327,6 +371,12 @@
     <button data-delim=";">分号</button>
   </div>
 
+  <div class="seg" id="viewSeg">
+    <button data-view="preview" class="active">预览</button>
+    <button data-view="source">源码</button>
+    <button data-view="split">对比</button>
+  </div>
+
   <button class="btn active" id="headerBtn" title="首行作为表头">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="14" y2="18"/></svg>
     首行表头
@@ -343,7 +393,7 @@
     下载
   </button>
   <button class="btn" id="exportJsonBtn" disabled>
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="14 2 14 8 20 8"/><path d="M4 18a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2"/><path d="M12 14v-8"/><polyline points="8 10 12 14 16 10"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/></svg>
     导出 JSON
   </button>
 
@@ -610,7 +660,8 @@ const state = {
   filteredRows: [],
   sortCol: -1,
   sortDir: 0, // 1 升序, -1 降序, 0 还原
-  searchQuery: ''
+  searchQuery: '',
+  viewMode: 'preview' // preview | source | split
 };
 
 /* ---------- 通用工具 ---------- */
@@ -698,7 +749,7 @@ function loadCsv(text, fileName) {
 
   rebuildData();
   applyFilterSort();
-  renderTable();
+  render();
   updateStats(true);
   enableActionButtons(true);
   showToast('已导入：' + state.fileName);
@@ -730,7 +781,7 @@ function setDelimiter(delim) {
   }
   rebuildData();
   applyFilterSort();
-  renderTable();
+  render();
   updateStats(true);
   showToast('分隔符已切换');
 }
@@ -741,8 +792,18 @@ function setHasHeader(v) {
   if (!state.rawText) return;
   rebuildData();
   applyFilterSort();
-  renderTable();
+  render();
   updateStats(true);
+}
+
+function setViewMode(mode) {
+  state.viewMode = mode;
+  document.querySelectorAll('#viewSeg button').forEach(b => {
+    b.classList.toggle('active', b.dataset.view === mode);
+  });
+  try { localStorage.setItem('csv-view', mode); } catch {}
+  // 无有效数据时（空态 / 错误态）保持 dropzone 或错误框不变，仅切换按钮高亮
+  if (state.dataRows && state.dataRows.length) render();
 }
 
 function setActiveDelimiter(delim) {
@@ -789,13 +850,13 @@ function toggleSort(colIndex) {
     state.sortDir = 1;
   }
   applyFilterSort();
-  renderTable();
+  render();
 }
 
 function onSearchInput() {
   state.searchQuery = $('#searchInput').value;
   applyFilterSort();
-  renderTable();
+  render();
   updateMatchInfo();
 }
 
@@ -804,10 +865,7 @@ function onSearchInput() {
 const RENDER_LIMIT = 2000;
 const RENDER_THRESHOLD = 5000;
 
-function renderTable() {
-  const main = $('#main');
-  main.innerHTML = '';
-
+function buildTablePanel() {
   const panel = document.createElement('div');
   panel.className = 'table-panel';
 
@@ -901,7 +959,137 @@ function renderTable() {
     panel.appendChild(foot);
   }
 
-  main.appendChild(panel);
+  return panel;
+}
+
+/* ---------- 视图分发 ---------- */
+
+function render() {
+  const main = $('#main');
+  main.innerHTML = '';
+
+  if (state.viewMode === 'source') {
+    main.appendChild(buildSourcePanel());
+  } else if (state.viewMode === 'split') {
+    const split = document.createElement('div');
+    split.className = 'split-panel';
+    const left = document.createElement('div');
+    left.className = 'split-pane';
+    left.appendChild(buildSourcePanel());
+    const right = document.createElement('div');
+    right.className = 'split-pane';
+    right.appendChild(buildTablePanel());
+    split.appendChild(left);
+    split.appendChild(right);
+    main.appendChild(split);
+  } else {
+    main.appendChild(buildTablePanel());
+  }
+}
+
+/* ---------- 源码视图 ---------- */
+
+/**
+ * 将原始 CSV 文本逐字符着色，按物理行切分，返回每行的高亮 HTML。
+ * 引号字段、引号字符、分隔符分别着色；跨行保持 inQuotes 状态。
+ * @returns {string[]} 每行的高亮 HTML
+ */
+function buildSourceLines(text, delimiter) {
+  const lines = [];
+  let cur = '';
+  let inQuotes = false;
+  const flush = () => { lines.push(cur); cur = ''; };
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const next = text[i + 1];
+
+    // 换行（无论是否在引号内）都结束当前物理行，引号状态跨行保持
+    if (c === '\r') {
+      if (next === '\n') i++;
+      flush();
+      continue;
+    }
+    if (c === '\n') {
+      flush();
+      continue;
+    }
+
+    if (inQuotes) {
+      if (c === '"') {
+        if (next === '"') { cur += '<span class="tok-q">""</span>'; i++; }
+        else { inQuotes = false; cur += '<span class="tok-quote">"</span>'; }
+      } else {
+        cur += escapeHtml(c);
+      }
+    } else {
+      if (c === '"') {
+        inQuotes = true;
+        cur += '<span class="tok-quote">"</span>';
+      } else if (c === delimiter) {
+        cur += '<span class="tok-delim">' + escapeHtml(c) + '</span>';
+      } else {
+        cur += escapeHtml(c);
+      }
+    }
+  }
+  if (cur !== '') flush();
+  return lines;
+}
+
+function buildSourcePanel() {
+  const panel = document.createElement('div');
+  panel.className = 'source-panel';
+
+  // 信息栏
+  const head = document.createElement('div');
+  head.className = 'table-head';
+  head.innerHTML =
+    '<span>📄</span>' +
+    '<span class="filename">' + escapeHtml(state.fileName) + '</span>' +
+    '<span>·</span>' +
+    '<span>源码视图</span>' +
+    '<span>·</span>' +
+    '<span>分隔符 ' + escapeHtml(displayDelimiter(currentDelimiter())) + '</span>';
+  const copySrc = document.createElement('button');
+  copySrc.className = 'btn ghost';
+  copySrc.style.cssText = 'height:26px;padding:0 9px;margin-left:auto;font-size:12px;';
+  copySrc.innerHTML = COPY_ICON + ' 复制源码';
+  copySrc.title = '复制原始 CSV 文本';
+  copySrc.addEventListener('click', () =>
+    copyAndToast(state.rawText, '已复制源码（' + formatSize(byteLength(state.rawText)) + '）'));
+  head.appendChild(copySrc);
+  panel.appendChild(head);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'source-wrap';
+
+  const lines = buildSourceLines(state.rawText, currentDelimiter());
+  const total = lines.length;
+  const showCount = total > RENDER_THRESHOLD ? RENDER_LIMIT : total;
+
+  const gutter = document.createElement('pre');
+  gutter.className = 'source-gutter';
+  let gutterText = '';
+  for (let i = 0; i < showCount; i++) gutterText += (i + 1) + '\n';
+  gutter.textContent = gutterText.replace(/\n$/, '');
+
+  const code = document.createElement('pre');
+  code.className = 'source-code';
+  code.innerHTML = lines.slice(0, showCount).join('\n');
+
+  wrap.appendChild(gutter);
+  wrap.appendChild(code);
+  panel.appendChild(wrap);
+
+  if (total > RENDER_THRESHOLD) {
+    const foot = document.createElement('div');
+    foot.className = 'table-foot';
+    foot.textContent = '仅显示前 ' + RENDER_LIMIT + ' 行源码，共 ' + total + ' 行';
+    panel.appendChild(foot);
+  }
+
+  return panel;
 }
 
 function displayDelimiter(d) {
@@ -1151,6 +1339,18 @@ document.querySelectorAll('#delimiterSeg button').forEach(b => {
   b.addEventListener('click', () => setDelimiter(b.dataset.delim));
 });
 setActiveDelimiter('auto');
+
+/* 视图分段控件（预览 / 源码 / 对比） */
+try {
+  const savedView = localStorage.getItem('csv-view');
+  if (savedView === 'source' || savedView === 'split' || savedView === 'preview') {
+    state.viewMode = savedView;
+  }
+} catch {}
+document.querySelectorAll('#viewSeg button').forEach(b => {
+  b.classList.toggle('active', b.dataset.view === state.viewMode);
+  b.addEventListener('click', () => setViewMode(b.dataset.view));
+});
 
 /* 首行表头开关 */
 $('#headerBtn').addEventListener('click', () => setHasHeader(!state.hasHeader));
