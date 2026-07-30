@@ -228,9 +228,10 @@
     font-size: 12.5px; line-height: 1.6; color: var(--text);
     white-space: pre; tab-size: 4; -moz-tab-size: 4;
   }
-  .source-code .tok-quote { color: var(--success); }
-  .source-code .tok-q { color: var(--danger); font-weight: 600; }
-  .source-code .tok-delim { color: var(--accent); opacity: .82; }
+  .source-editor {
+    border: 0; outline: 0; resize: none; background: transparent;
+    width: 100%; min-height: 100%; overflow: hidden;
+  }
 
   /* ---------- Split view（源码 / 预览 对比） ---------- */
   .split-panel { display: flex; gap: 16px; max-width: 1500px; margin: 0 auto; }
@@ -364,13 +365,6 @@
 
   <div class="divider"></div>
 
-  <div class="seg" id="delimiterSeg">
-    <button data-delim="auto">自动</button>
-    <button data-delim=",">逗号</button>
-    <button data-delim="\t">Tab</button>
-    <button data-delim=";">分号</button>
-  </div>
-
   <div class="seg" id="viewSeg">
     <button data-view="preview" class="active">预览</button>
     <button data-view="source">源码</button>
@@ -478,7 +472,7 @@
 /* =========================================================
    CSV 在线预览工具
    - 单文件、零依赖、纯前端
-   - RFC 4180 兼容解析，自动/手动分隔符
+   - RFC 4180 兼容解析，自动识别分隔符
    - 首行表头开关、排序、搜索、复制、下载、导出 JSON
    ========================================================= */
 
@@ -653,7 +647,6 @@ const state = {
   byteSize: 0,
   parsedRows: [],
   hasHeader: true,
-  delimiter: 'auto',
   detectedDelimiter: ',',
   header: [],
   dataRows: [],
@@ -709,7 +702,7 @@ const COPY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 /* ---------- 解析与状态更新 ---------- */
 
 function currentDelimiter() {
-  return state.delimiter === 'auto' ? state.detectedDelimiter : state.delimiter;
+  return state.detectedDelimiter;
 }
 
 function loadCsv(text, fileName) {
@@ -768,22 +761,23 @@ function rebuildData() {
   }
 }
 
-function setDelimiter(delim) {
-  state.delimiter = delim;
-  setActiveDelimiter(delim);
-  if (!state.rawText) return;
-  const text = state.rawText;
+function updateSourceData(text) {
+  state.rawText = text;
+  state.byteSize = byteLength(text);
   state.detectedDelimiter = detectDelimiter(text);
-  state.parsedRows = parseCSV(text, currentDelimiter());
-  if (state.parsedRows.length === 0) {
-    showError('未能解析出任何行，请检查分隔符或文件内容。', text);
-    return;
-  }
+  const parsedRows = parseCSV(text, currentDelimiter());
+  if (!parsedRows.length) return false;
+  state.parsedRows = parsedRows;
   rebuildData();
   applyFilterSort();
-  render();
   updateStats(true);
-  showToast('分隔符已切换');
+  enableActionButtons(true);
+
+  if (state.viewMode === 'split') {
+    const previewPane = $('#main .split-pane:last-child');
+    if (previewPane) previewPane.replaceChildren(buildTablePanel());
+  }
+  return true;
 }
 
 function setHasHeader(v) {
@@ -804,12 +798,6 @@ function setViewMode(mode) {
   try { localStorage.setItem('csv-view', mode); } catch {}
   // 无有效数据时（空态 / 错误态）保持 dropzone 或错误框不变，仅切换按钮高亮
   if (state.dataRows && state.dataRows.length) render();
-}
-
-function setActiveDelimiter(delim) {
-  document.querySelectorAll('#delimiterSeg button').forEach(b => {
-    b.classList.toggle('active', b.dataset.delim === delim);
-  });
 }
 
 /* ---------- 过滤与排序 ---------- */
@@ -989,54 +977,6 @@ function render() {
 
 /* ---------- 源码视图 ---------- */
 
-/**
- * 将原始 CSV 文本逐字符着色，按物理行切分，返回每行的高亮 HTML。
- * 引号字段、引号字符、分隔符分别着色；跨行保持 inQuotes 状态。
- * @returns {string[]} 每行的高亮 HTML
- */
-function buildSourceLines(text, delimiter) {
-  const lines = [];
-  let cur = '';
-  let inQuotes = false;
-  const flush = () => { lines.push(cur); cur = ''; };
-
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    const next = text[i + 1];
-
-    // 换行（无论是否在引号内）都结束当前物理行，引号状态跨行保持
-    if (c === '\r') {
-      if (next === '\n') i++;
-      flush();
-      continue;
-    }
-    if (c === '\n') {
-      flush();
-      continue;
-    }
-
-    if (inQuotes) {
-      if (c === '"') {
-        if (next === '"') { cur += '<span class="tok-q">""</span>'; i++; }
-        else { inQuotes = false; cur += '<span class="tok-quote">"</span>'; }
-      } else {
-        cur += escapeHtml(c);
-      }
-    } else {
-      if (c === '"') {
-        inQuotes = true;
-        cur += '<span class="tok-quote">"</span>';
-      } else if (c === delimiter) {
-        cur += '<span class="tok-delim">' + escapeHtml(c) + '</span>';
-      } else {
-        cur += escapeHtml(c);
-      }
-    }
-  }
-  if (cur !== '') flush();
-  return lines;
-}
-
 function buildSourcePanel() {
   const panel = document.createElement('div');
   panel.className = 'source-panel';
@@ -1050,7 +990,7 @@ function buildSourcePanel() {
     '<span>·</span>' +
     '<span>源码视图</span>' +
     '<span>·</span>' +
-    '<span>分隔符 ' + escapeHtml(displayDelimiter(currentDelimiter())) + '</span>';
+    '<span class="source-delimiter">分隔符 ' + escapeHtml(displayDelimiter(currentDelimiter())) + '</span>';
   const copySrc = document.createElement('button');
   copySrc.className = 'btn ghost';
   copySrc.style.cssText = 'height:26px;padding:0 9px;margin-left:auto;font-size:12px;';
@@ -1064,30 +1004,29 @@ function buildSourcePanel() {
   const wrap = document.createElement('div');
   wrap.className = 'source-wrap';
 
-  const lines = buildSourceLines(state.rawText, currentDelimiter());
-  const total = lines.length;
-  const showCount = total > RENDER_THRESHOLD ? RENDER_LIMIT : total;
-
   const gutter = document.createElement('pre');
   gutter.className = 'source-gutter';
-  let gutterText = '';
-  for (let i = 0; i < showCount; i++) gutterText += (i + 1) + '\n';
-  gutter.textContent = gutterText.replace(/\n$/, '');
+  const updateGutter = (text) => {
+    const lineCount = Math.max(1, text.split(/\r\n|\r|\n/).length);
+    gutter.textContent = Array.from({ length: lineCount }, (_, i) => i + 1).join('\n');
+  };
+  updateGutter(state.rawText);
 
-  const code = document.createElement('pre');
-  code.className = 'source-code';
-  code.innerHTML = lines.slice(0, showCount).join('\n');
+  const code = document.createElement('textarea');
+  code.className = 'source-code source-editor';
+  code.spellcheck = false;
+  code.value = state.rawText;
+  code.setAttribute('aria-label', '编辑 CSV 源码');
+  code.addEventListener('input', () => {
+    updateGutter(code.value);
+    if (updateSourceData(code.value)) {
+      head.querySelector('.source-delimiter').textContent = '分隔符 ' + displayDelimiter(currentDelimiter());
+    }
+  });
 
   wrap.appendChild(gutter);
   wrap.appendChild(code);
   panel.appendChild(wrap);
-
-  if (total > RENDER_THRESHOLD) {
-    const foot = document.createElement('div');
-    foot.className = 'table-foot';
-    foot.textContent = '仅显示前 ' + RENDER_LIMIT + ' 行源码，共 ' + total + ' 行';
-    panel.appendChild(foot);
-  }
 
   return panel;
 }
@@ -1333,12 +1272,6 @@ $('#sampleBtn').addEventListener('click', () => {
     '孙七,技术部,杭州,20000,2018-11-12,"全栈, 带团队"';
   loadCsv(sample, 'sample.csv');
 });
-
-/* 分隔符分段控件 */
-document.querySelectorAll('#delimiterSeg button').forEach(b => {
-  b.addEventListener('click', () => setDelimiter(b.dataset.delim));
-});
-setActiveDelimiter('auto');
 
 /* 视图分段控件（预览 / 源码 / 对比） */
 try {
